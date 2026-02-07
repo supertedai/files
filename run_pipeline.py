@@ -11,7 +11,7 @@ All parameters locked per Appendix B (pre-registered before seeing TE data):
 - Decision tree: F1/C1/C2/C3 scoring
 
 Usage:
-    pip install mne numpy scipy pyinform
+    pip install mne numpy scipy pyinform h5py
     python run_pipeline.py --data-dir "path/to/Sedation-RestingState"
 """
 
@@ -46,6 +46,12 @@ try:
 except ImportError:
     print("ERROR: pyinform not installed. Run: pip install pyinform")
     sys.exit(1)
+
+try:
+    import h5py
+    HAS_H5PY = True
+except ImportError:
+    HAS_H5PY = False
 
 
 # ============================================================
@@ -140,9 +146,85 @@ def find_subject_files(data_dir):
     return dict(subjects)
 
 
+def _read_hdf5_set(filepath):
+    """
+    Read EEGLAB .set file saved in MATLAB v7.3 (HDF5) format using h5py.
+    Returns channel names, sampling rate, and data array (n_channels, n_times).
+    The .fdt file contains the raw float data referenced by the .set file.
+    """
+    if not HAS_H5PY:
+        raise ImportError("h5py is required for MATLAB v7.3 .set files. "
+                          "Run: pip install h5py")
+
+    with h5py.File(filepath, 'r') as f:
+        eeg = f['EEG']
+
+        # Sampling rate
+        sfreq = float(np.array(eeg['srate']).flat[0])
+
+        # Number of channels and points
+        nbchan = int(np.array(eeg['nbchan']).flat[0])
+        pnts = int(np.array(eeg['pnts']).flat[0])
+
+        # Channel names - stored as HDF5 references in v7.3 format
+        chanlocs = eeg['chanlocs']
+        ch_names = []
+        if 'labels' in chanlocs:
+            labels_ref = chanlocs['labels']
+            for i in range(nbchan):
+                try:
+                    ref = labels_ref[i, 0]
+                    chars = f[ref][()]
+                    name = ''.join(chr(c) for c in chars.flat)
+                    ch_names.append(name.strip())
+                except Exception:
+                    ch_names.append(f'E{i+1}')
+        else:
+            ch_names = [f'E{i+1}' for i in range(nbchan)]
+
+        # Try to read data from the .set file directly
+        data = None
+        if 'data' in eeg:
+            d = eeg['data']
+            if isinstance(d, h5py.Dataset) and d.shape[0] > 1:
+                data = np.array(d, dtype=np.float64)
+                # EEGLAB stores as (channels, timepoints) or transposed
+                if data.shape[0] == pnts and data.shape[1] == nbchan:
+                    data = data.T  # Transpose to (channels, timepoints)
+
+    # If data not in .set, read from .fdt file
+    if data is None:
+        fdt_path = filepath.replace('.set', '.fdt')
+        if os.path.exists(fdt_path):
+            data = np.fromfile(fdt_path, dtype=np.float32)
+            data = data.reshape((nbchan, pnts), order='F')
+            data = data.astype(np.float64)
+        else:
+            raise FileNotFoundError(f"Cannot find .fdt file: {fdt_path}")
+
+    return ch_names, sfreq, data
+
+
 def load_eeg(filepath, epoch_duration=EPOCH_DURATION):
-    """Load EEGLAB .set file and create fixed-length epochs."""
-    raw = mne.io.read_raw_eeglab(filepath, preload=True, verbose=False)
+    """Load EEGLAB .set file and create fixed-length epochs.
+    Handles both standard and MATLAB v7.3 (HDF5) formats."""
+    try:
+        # Try standard MNE EEGLAB reader first
+        raw = mne.io.read_raw_eeglab(filepath, preload=True, verbose=False)
+    except Exception as e:
+        if 'v7.3' in str(e) or 'HDF' in str(e) or 'h5py' in str(e).lower():
+            # MATLAB v7.3 format - use h5py reader
+            ch_names, sfreq, data = _read_hdf5_set(filepath)
+
+            # Create MNE RawArray
+            info = mne.create_info(
+                ch_names=ch_names,
+                sfreq=sfreq,
+                ch_types='eeg'
+            )
+            raw = mne.io.RawArray(data * 1e-6, info, verbose=False)  # uV -> V
+        else:
+            raise
 
     # Create fixed-length epochs
     epochs = mne.make_fixed_length_epochs(
@@ -190,7 +272,8 @@ def get_roi_signals(epochs_data, roi_indices):
 def permutation_entropy(x, order=PE_ORDER, delay=PE_DELAY):
     """Compute normalized permutation entropy of a 1D signal."""
     n = len(x)
-    n_perms = np.math.factorial(order)
+    import math
+    n_perms = math.factorial(order)
 
     # Build permutation patterns
     indices = np.arange(order) * delay
