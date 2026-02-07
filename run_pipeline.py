@@ -182,6 +182,16 @@ def _read_hdf5_set(filepath):
         else:
             ch_names = [f'E{i+1}' for i in range(nbchan)]
 
+        # Debug info for first file
+        print(f"      [HDF5] nbchan={nbchan}, pnts={pnts}, sfreq={sfreq}")
+        print(f"      [HDF5] ch_names[0:5]={ch_names[:5]}")
+        if 'data' in eeg:
+            d_info = eeg['data']
+            if isinstance(d_info, h5py.Dataset):
+                print(f"      [HDF5] data in .set: shape={d_info.shape}, dtype={d_info.dtype}")
+            else:
+                print(f"      [HDF5] data in .set: type={type(d_info)}")
+
         # Try to read data from the .set file directly
         data = None
         if 'data' in eeg:
@@ -196,8 +206,23 @@ def _read_hdf5_set(filepath):
     if data is None:
         fdt_path = filepath.replace('.set', '.fdt')
         if os.path.exists(fdt_path):
-            data = np.fromfile(fdt_path, dtype=np.float32)
-            data = data.reshape((nbchan, pnts), order='F')
+            raw_data = np.fromfile(fdt_path, dtype=np.float32)
+            n_samples_expected = nbchan * pnts
+
+            if raw_data.size == n_samples_expected:
+                # EEGLAB .fdt: stored as interleaved channels (C-order)
+                # Layout: [ch0_t0, ch1_t0, ..., chN_t0, ch0_t1, ch1_t1, ...]
+                data = raw_data.reshape((pnts, nbchan)).T
+            elif raw_data.size % nbchan == 0:
+                # File size doesn't match expected pnts, recalculate
+                actual_pnts = raw_data.size // nbchan
+                data = raw_data.reshape((actual_pnts, nbchan)).T
+                pnts = actual_pnts
+            else:
+                raise ValueError(
+                    f"Cannot reshape .fdt data: {raw_data.size} samples, "
+                    f"{nbchan} channels, expected {n_samples_expected}"
+                )
             data = data.astype(np.float64)
         else:
             raise FileNotFoundError(f"Cannot find .fdt file: {fdt_path}")
