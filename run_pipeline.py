@@ -196,9 +196,12 @@ def _read_hdf5_set(filepath):
         data = None
         if 'data' in eeg:
             d = eeg['data']
-            if isinstance(d, h5py.Dataset) and d.shape[0] > 1:
+            # Only use in-file data if it's a float dataset with the right size
+            # (uint16 with small shape = filename string reference to .fdt)
+            if (isinstance(d, h5py.Dataset) and
+                    d.dtype in (np.float32, np.float64) and
+                    d.size == nbchan * pnts):
                 data = np.array(d, dtype=np.float64)
-                # EEGLAB stores as (channels, timepoints) or transposed
                 if data.shape[0] == pnts and data.shape[1] == nbchan:
                     data = data.T  # Transpose to (channels, timepoints)
 
