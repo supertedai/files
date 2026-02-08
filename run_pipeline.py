@@ -182,16 +182,6 @@ def _read_hdf5_set(filepath):
         else:
             ch_names = [f'E{i+1}' for i in range(nbchan)]
 
-        # Debug info for first file
-        print(f"      [HDF5] nbchan={nbchan}, pnts={pnts}, sfreq={sfreq}")
-        print(f"      [HDF5] ch_names[0:5]={ch_names[:5]}")
-        if 'data' in eeg:
-            d_info = eeg['data']
-            if isinstance(d_info, h5py.Dataset):
-                print(f"      [HDF5] data in .set: shape={d_info.shape}, dtype={d_info.dtype}")
-            else:
-                print(f"      [HDF5] data in .set: type={type(d_info)}")
-
         # Try to read data from the .set file directly
         data = None
         if 'data' in eeg:
@@ -829,7 +819,8 @@ def run_pipeline(data_dir):
         'dissociation_r': float(r),
         'd_values': {k: float(v) for k, v in d_values.items()},
         'comparisons': {
-            k: {kk: float(vv) if isinstance(vv, (float, np.floating)) else vv
+            k: {kk: float(vv) if isinstance(vv, (float, np.floating, np.integer)) else
+                bool(vv) if isinstance(vv, (bool, np.bool_)) else vv
                 for kk, vv in v.items()}
             for k, v in comparison_results.items()
         },
