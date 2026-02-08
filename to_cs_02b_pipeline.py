@@ -54,7 +54,7 @@ LOCKED = {
     # Epochs
     "epoch_length_sec": 10,
     "epoch_overlap": 0,  # non-overlapping
-    "epoch_reject_uv": 100,  # reject if peak-to-peak > 100 uV in any channel
+    "epoch_reject_uv": 300,  # reject if peak-to-peak > 300 uV in any channel (calibrated for raw PSG; N3 delta median ~215 uV)
     "min_epochs_per_stage": 10,
 
     # Spectral entropy
