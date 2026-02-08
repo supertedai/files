@@ -82,27 +82,15 @@ LOCKED = {
     "min_subjects": 5,
 }
 
-# Sleep stage mapping (common ANPHY-Sleep / EDF+ annotations)
+# Sleep stage mapping for ANPHY-Sleep .txt scoring files
+# Format: STAGE ONSET_SEC DURATION_SEC (tab-separated, 30s epochs)
+# "L" = Lights off / setup period (skipped)
+# "R" = REM
 STAGE_MAP = {
-    # Standard AASM annotations
-    "Sleep stage W": "Wake",
-    "Sleep stage R": "REM",
-    "Sleep stage N1": "N1",
-    "Sleep stage N2": "N2",
-    "Sleep stage N3": "N3",
-    # Numeric variants
-    "Sleep stage 0": "Wake",
-    "Sleep stage 5": "REM",
-    "Sleep stage 1": "N1",
-    "Sleep stage 2": "N2",
-    "Sleep stage 3": "N3",
-    "Sleep stage 4": "N3",  # old R&K stage 4 -> N3
-    # Short forms
     "W": "Wake", "R": "REM", "N1": "N1", "N2": "N2", "N3": "N3",
-    "0": "Wake", "5": "REM", "1": "N1", "2": "N2", "3": "N3", "4": "N3",
-    # Other possible variants
-    "wake": "Wake", "rem": "REM", "n1": "N1", "n2": "N2", "n3": "N3",
-    "WAKE": "Wake", "REM": "REM",
+    "REM": "REM", "WAKE": "Wake", "wake": "Wake", "rem": "REM",
+    "n1": "N1", "n2": "N2", "n3": "N3",
+    # "L" (lights/setup) is intentionally omitted -> skipped
 }
 
 STAGES_REQUIRED = ["Wake", "N3"]
@@ -114,24 +102,29 @@ STAGES_ALL = ["Wake", "REM", "N2", "N3"]
 # ROI DEFINITIONS FOR 10-10 MONTAGE (locked after channel detection)
 # ============================================================
 
+# ROI definitions include both 10-10 and old 10-20 names
+# (T3=T7, T4=T8, T5=P7, T6=P8 in old nomenclature)
 ROI_DEFINITIONS_10_10 = {
     "F_L":  ["Fp1", "AF3", "AF7", "F3", "F5", "F7", "F1"],
-    "F_R":  ["Fp2", "AF4", "AF8", "F4", "F6", "F8", "F2", "Fz"],
-    "C_L":  ["C3", "C5", "C1", "FC3", "FC5", "FC1", "CP3", "CP1", "T7"],
-    "C_R":  ["C4", "C6", "C2", "FC4", "FC6", "FC2", "CP4", "CP2", "Cz", "T8"],
-    "P_L":  ["P3", "P5", "P7", "P1", "CP5", "PO3", "PO7", "TP7"],
-    "P_R":  ["P4", "P6", "P8", "P2", "CP6", "PO4", "PO8", "Pz", "TP8"],
-    "O_L":  ["O1", "PO7", "P7"],  # small ROI, overlap with P_L on PO7
-    "O_R":  ["O2", "PO8", "Oz", "P8"],
+    "F_R":  ["Fp2", "AF4", "AF8", "F4", "F6", "F8", "F2", "Fz", "FZ"],
+    "C_L":  ["C3", "C5", "C1", "FC3", "FC5", "FC1", "CP3", "CP1", "T7", "T3"],
+    "C_R":  ["C4", "C6", "C2", "FC4", "FC6", "FC2", "CP4", "CP2", "Cz", "CZ", "T8", "T4"],
+    "P_L":  ["P3", "P5", "P7", "T5", "P1", "CP5", "PO3", "PO7", "TP7"],
+    "P_R":  ["P4", "P6", "P8", "T6", "P2", "CP6", "PO4", "PO8", "Pz", "PZ", "TP8"],
+    "O_L":  ["O1", "PO7"],
+    "O_R":  ["O2", "PO8", "Oz", "OZ"],
 }
 
 # Channels to exclude (non-EEG)
 EXCLUDE_PATTERNS = [
     "EOG", "EMG", "ECG", "EKG", "eog", "emg", "ecg",
     "Status", "STI", "Trigger", "Event", "DC", "EDF",
-    "chin", "Chin", "leg", "Leg", "A1", "A2", "M1", "M2",
+    "chin", "Chin", "ChEMG",
+    "leg", "Leg", "RLEG", "LLEG",
+    "A1", "A2", "M1", "M2",
     "HEOG", "VEOG", "Resp", "SpO2", "Pulse", "Snore",
     "Flow", "Thor", "Abdo", "Position", "Light", "Temp",
+    "ZY1", "ZY2", "SO1", "SO2",  # zygomatic / supra-orbital (non-EEG)
 ]
 
 
@@ -189,15 +182,28 @@ def is_eeg_channel(ch_name):
     return True
 
 
+def normalise_channel_name(name):
+    """
+    Normalise channel name for ROI matching.
+    Strips '-Ref' suffix (EPCTL21 format), removes dots/spaces, lowercases.
+    'Fp1-Ref' -> 'fp1', 'FZ-Ref' -> 'fz', 'CP5' -> 'cp5'
+    """
+    n = name.strip()
+    # Strip common reference suffixes
+    for suffix in ["-Ref", "-ref", "-REF", "-Avg", "-avg", "-AVG"]:
+        if n.endswith(suffix):
+            n = n[:-len(suffix)]
+    return n
+
+
 def map_channels_to_rois(ch_names):
     """
     Map available EEG channels to ROIs.
+    Handles both 'Fp1' and 'Fp1-Ref' naming conventions.
     Returns: dict roi_name -> list of channel indices
     """
-    def normalise(name):
-        return name.strip().replace('.', '').replace('-', '').replace(' ', '')
-
-    ch_norm = {normalise(ch): i for i, ch in enumerate(ch_names)}
+    # Build lookup: normalised name -> channel index
+    ch_norm = {normalise_channel_name(ch).lower(): i for i, ch in enumerate(ch_names)}
 
     roi_mapping = {}
     mapped_channels = {}
@@ -206,16 +212,10 @@ def map_channels_to_rois(ch_names):
         indices = []
         matched = []
         for rc in roi_channels:
-            rc_norm = normalise(rc)
-            if rc_norm in ch_norm:
-                indices.append(ch_norm[rc_norm])
-                matched.append(ch_names[ch_norm[rc_norm]])
-            else:
-                for cn, ci in ch_norm.items():
-                    if cn.lower() == rc_norm.lower():
-                        indices.append(ci)
-                        matched.append(ch_names[ci])
-                        break
+            rc_lower = rc.lower()
+            if rc_lower in ch_norm:
+                indices.append(ch_norm[rc_lower])
+                matched.append(ch_names[ch_norm[rc_lower]])
 
         if len(indices) >= 2:
             roi_mapping[roi_name] = indices
@@ -262,29 +262,60 @@ def load_and_preprocess(filepath, target_sfreq=250):
     return raw, raw.ch_names
 
 
-def extract_annotations(raw):
+def load_scoring_txt(txt_path):
     """
-    Extract sleep stage annotations from EDF+ annotations.
+    Load sleep stage scoring from ANPHY-Sleep .txt file.
+    Format: STAGE<tab>ONSET_SEC<tab>DURATION_SEC  (one line per 30s epoch)
+    Example: "W  450  30", "N2  12870  30", "L  0  30"
     Returns: list of (onset_sec, duration_sec, stage_label)
     """
-    annotations = raw.annotations
     stages = []
+    with open(txt_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            label = parts[0]
+            try:
+                onset = float(parts[1])
+                duration = float(parts[2])
+            except ValueError:
+                continue
 
-    for ann in annotations:
-        onset = ann['onset']
-        duration = ann['duration']
-        desc = str(ann['description']).strip()
-
-        stage = None
-        for key, val in STAGE_MAP.items():
-            if key in desc or desc == key:
-                stage = val
-                break
-
-        if stage is not None:
-            stages.append((onset, duration, stage))
+            stage = STAGE_MAP.get(label, None)
+            if stage is not None:
+                stages.append((onset, duration, stage))
 
     return stages
+
+
+def find_scoring_file(edf_path):
+    """
+    Find the .txt scoring file matching an EDF file.
+    Looks for SUBJECTID.txt in the same directory as the EDF.
+    """
+    edf_dir = os.path.dirname(edf_path)
+    stem = Path(edf_path).stem  # e.g. "EPCTL21"
+
+    # Try same directory
+    txt_path = os.path.join(edf_dir, stem + ".txt")
+    if os.path.exists(txt_path):
+        return txt_path
+
+    # Try parent directory
+    txt_path = os.path.join(os.path.dirname(edf_dir), stem + ".txt")
+    if os.path.exists(txt_path):
+        return txt_path
+
+    # Search recursively from DATA_DIR
+    matches = glob.glob(os.path.join(DATA_DIR, "**", stem + ".txt"), recursive=True)
+    if matches:
+        return matches[0]
+
+    return None
 
 
 def epoch_by_stage(raw, annotations, epoch_len, reject_uv):
@@ -617,6 +648,13 @@ def run_subject(filepath, subject_id):
     """Run full pipeline on one subject."""
     import mne
 
+    # Find scoring .txt file FIRST (cheap check before loading big EDF)
+    scoring_path = find_scoring_file(filepath)
+    if scoring_path is None:
+        log(f"  SKIP: No scoring .txt file found for {subject_id}")
+        return None
+    log(f"  Scoring file: {os.path.basename(scoring_path)}")
+
     raw, ch_names = load_and_preprocess(filepath)
     if raw is None:
         return None
@@ -630,13 +668,12 @@ def run_subject(filepath, subject_id):
         log(f"  SKIP: Too few ROIs ({len(roi_mapping)})")
         return None
 
-    annotations = extract_annotations(raw)
+    annotations = load_scoring_txt(scoring_path)
     if not annotations:
-        log(f"  SKIP: No sleep stage annotations found")
-        log(f"  Available annotations: {set(a['description'] for a in raw.annotations)}")
+        log(f"  SKIP: No valid sleep stages in scoring file")
         return None
 
-    log(f"  Annotations found: {len(annotations)} segments")
+    log(f"  Scoring entries loaded: {len(annotations)}")
     stage_counts = {}
     for _, _, s in annotations:
         stage_counts[s] = stage_counts.get(s, 0) + 1
